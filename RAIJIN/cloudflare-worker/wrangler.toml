@@ -1,0 +1,12 @@
+name = "raijin-gateway"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "raijin-signals"
+database_id = "14300a2c-6b4a-4b80-963c-a26a882d24db"
+
+[vars]
+BOT_URL = "https://emails-member-lcd-thick.trycloudflare.com/signal"
+ENV = "paper"

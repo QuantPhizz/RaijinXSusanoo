@@ -1,0 +1,28 @@
+# =============================================================================
+# TKO-AGENTS — Shared Requirements
+# Target: /Users/shugogeta/tko-agents/RaijinXSusanoo/requirements.txt
+# Install inside RAIJIN venv: pip install -r requirements.txt
+# =============================================================================
+
+# --- API Server ---
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+python-dotenv>=1.0.0
+
+# --- Database ---
+asyncpg>=0.29.0
+
+# --- Risk Engine ---
+exchange-calendars>=4.5.0
+numpy>=1.26.0
+
+# --- IBKR (Phase 1+) ---
+# ibapi  # Install manually from IBKR TWS API download — not on PyPI
+
+# --- Market Data (Phase 1+) ---
+# polygon-api-client>=1.13.0
+# requests>=2.31.0
+
+# --- Options Pricing (Phase 1+) ---
+# QuantLib-Python>=1.32

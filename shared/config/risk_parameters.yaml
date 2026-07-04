@@ -1,0 +1,60 @@
+# =============================================================================
+# TKO-AGENTS — Shared Risk Parameters
+# Source-of-record: SPEC_shared_risk_engine_v4.1.md
+# Loaded by: shared/risk/sizing.py
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# RAIJIN Kelly Tiers (VIX-conditioned fractional Kelly)
+# Primary frequency governor post-PDT elimination (June 4 2026).
+# ---------------------------------------------------------------------------
+raijin_kelly_tiers:
+  - vix_range: [0, 20]
+    fraction: 0.25       # Low VIX: default capacity
+  - vix_range: [20, 30]
+    fraction: 0.15       # Elevated: compress
+  - vix_range: [30, 100]
+    fraction: 0.08       # Crisis: minimal (VIX_SPIKE breaker -> long-only)
+
+# ---------------------------------------------------------------------------
+# SUSANOO VRP Sizing (continuous function, NOT a binary switch)
+# Dormant unless VRP < -3.0. Scales 0->1 as VRP goes -3->-9.
+# ---------------------------------------------------------------------------
+susanoo_vrp_sizing:
+  base_pct: 0.03         # base = 0.03 * allocation
+  max_pct: 0.05          # max  = 0.05 * allocation
+  vrp_activation: -3.0   # VRP must be < -3.0 to activate (dormant above)
+  vrp_full_scale: -9.0   # VRP at which scale reaches 1.0
+  vix_half_threshold: 35  # Halve position size if VIX > this
+  vix_dormant_threshold: 40  # Return 0.0 if VIX > this
+
+# ---------------------------------------------------------------------------
+# Circuit Breaker Thresholds
+# ---------------------------------------------------------------------------
+circuit_breakers:
+  daily_drawdown_pct: 0.02      # -2% daily P&L -> pause new entries
+  peak_to_trough_pct: 0.08      # -8% from peak -> full halt, manual review
+  vix_spike_threshold: 30       # VIX > 30 -> RAIJIN long-premium only
+  vix_resume_threshold: 28      # VIX < 28 -> auto-resolve VIX_SPIKE
+  is_budget_pct: 0.25           # IS > 25% of avg edge -> pause that system
+
+# ---------------------------------------------------------------------------
+# Capital Fence (70/30 split)
+# ---------------------------------------------------------------------------
+capital_fence:
+  raijin_allocation_pct: 0.70
+  susanoo_allocation_pct: 0.30
+  combined_dd_alert: 0.04       # 4%: alert only
+  combined_dd_freeze_susanoo: 0.06  # 6%: freeze SUSANOO
+  combined_dd_freeze_all: 0.08  # 8%: freeze both
+
+# ---------------------------------------------------------------------------
+# Trade Risk Limits
+# ---------------------------------------------------------------------------
+trade_limits:
+  max_risk_per_trade_pct: 0.05  # 5% of system allocation per trade
+  max_risk_dollars: 250
+  max_positions: 3
+  max_spread_width: 3
+  profit_target: 0.50           # 50% of max profit
+  stop_loss_multiplier: 2.0     # 2x credit received

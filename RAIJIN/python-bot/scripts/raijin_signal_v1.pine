@@ -1,0 +1,51 @@
+//@version=5
+strategy("RAIJIN Signal Generator v1", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=2, calc_on_every_tick=false)
+
+fast_len = input.int(8, "Fast MA Length", minval=2)
+slow_len = input.int(21, "Slow MA Length", minval=5)
+rsi_len = input.int(14, "RSI Length", minval=2)
+vol_mult = input.float(1.2, "Volume Filter Multiplier", minval=1.0)
+// F2: Replace RAIJIN_SECRET_CHANGE_ME with the real secret set in wrangler (WEBHOOK_SECRET)
+webhook_secret = input.string("RAIJIN_SECRET_CHANGE_ME", "Webhook Secret")
+strategy_id = input.string("momentum_v1", "Strategy ID")
+
+fast_ma = ta.ema(close, fast_len)
+slow_ma = ta.ema(close, slow_len)
+rsi = ta.rsi(close, rsi_len)
+atr = ta.atr(14)
+vol_avg = ta.sma(volume, 20)
+
+ma_bull = ta.crossover(fast_ma, slow_ma)
+ma_bear = ta.crossunder(fast_ma, slow_ma)
+vol_ok = volume > vol_avg * vol_mult
+rsi_mid = rsi > 40 and rsi < 60
+
+long_sig = ma_bull and vol_ok and rsi_mid
+short_sig = ma_bear and vol_ok and rsi_mid
+
+trend_str = math.abs(fast_ma - slow_ma) / slow_ma * 100
+regime_est = trend_str > 0.5 ? "trending" : "range_bound"
+
+// F1: Payload matches Worker schema exactly:
+//   system (required by Worker) + direction (was "action") + timestamp (required by Worker)
+long_msg = '{"system":"RAIJIN","secret":"' + webhook_secret + '","direction":"buy","ticker":"' + syminfo.ticker + '","strategy":"' + strategy_id + '","timeframe":"' + timeframe.period + '","price":' + str.tostring(close) + ',"atr":' + str.tostring(math.round(atr, 4)) + ',"rsi":' + str.tostring(math.round(rsi, 2)) + ',"regime":"' + regime_est + '","ivr":null,"timestamp":"' + str.format_time(timenow, "yyyy-MM-dd'T'HH:mm:ss+00:00", "UTC") + '","meta":{"vol_ratio":' + str.tostring(math.round(volume / vol_avg, 2)) + '}}'
+
+short_msg = '{"system":"RAIJIN","secret":"' + webhook_secret + '","direction":"sell","ticker":"' + syminfo.ticker + '","strategy":"' + strategy_id + '","timeframe":"' + timeframe.period + '","price":' + str.tostring(close) + ',"atr":' + str.tostring(math.round(atr, 4)) + ',"rsi":' + str.tostring(math.round(rsi, 2)) + ',"regime":"' + regime_est + '","ivr":null,"timestamp":"' + str.format_time(timenow, "yyyy-MM-dd'T'HH:mm:ss+00:00", "UTC") + '","meta":{"vol_ratio":' + str.tostring(math.round(volume / vol_avg, 2)) + '}}'
+
+if long_sig
+    strategy.entry("Long", strategy.long, alert_message=long_msg)
+
+if short_sig
+    strategy.entry("Short", strategy.short, alert_message=short_msg)
+
+alertcondition(long_sig, title="RAIJIN BUY")
+alertcondition(short_sig, title="RAIJIN SELL")
+
+plot(fast_ma, "Fast MA", color=color.new(color.blue, 0), linewidth=1)
+plot(slow_ma, "Slow MA", color=color.new(color.orange, 0), linewidth=1)
+
+plotshape(long_sig, style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.small)
+plotshape(short_sig, style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+
+bgcolor(long_sig ? color.new(color.green, 90) : na)
+bgcolor(short_sig ? color.new(color.red, 90) : na)

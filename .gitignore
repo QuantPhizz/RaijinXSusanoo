@@ -1,0 +1,23 @@
+# Environment variables — secrets live here, never commit
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Logs
+logs/
+*.log
+
+# Node
+node_modules/
+
+# Wrangler local dev cache (miniflare state)
+.wrangler/
+
+# OS
+.DS_Store
