@@ -5,19 +5,39 @@
 
 import logging
 
+from shared.risk.params import PARAMS
+
 logger = logging.getLogger("tko-agents.sizing")
 
 # ---------------------------------------------------------------------------
-# RAIJIN Kelly tiers — VIX-conditioned
+# Parameters — all values come from risk_parameters.yaml
 # ---------------------------------------------------------------------------
 
 RAIJIN_KELLY_TIERS: dict[tuple[float, float], float] = {
-    (0.0,  20.0): 0.25,   # Low VIX: default capacity
-    (20.0, 30.0): 0.15,   # Elevated: compress
-    (30.0, 100.0): 0.08,  # Crisis: minimal (VIX_SPIKE breaker → long-only)
+    (float(t["vix_range"][0]), float(t["vix_range"][1])): float(t["fraction"])
+    for t in PARAMS["raijin_kelly_tiers"]
 }
+RAIJIN_IVR_TIERS: list[tuple[float | None, float]] = [
+    (None if t["min_ivr"] is None else float(t["min_ivr"]), float(t["fraction"]))
+    for t in PARAMS["raijin_ivr_tiers"]
+]
 
-MAX_RISK_DOLLARS = 250.0  # trade_limits.max_risk_dollars — hard per-trade cap
+_equity = float(PARAMS["account"]["starting_equity"])
+_fence  = PARAMS["capital_fence"]
+_limits = PARAMS["trade_limits"]
+_vrp    = PARAMS["susanoo_vrp_sizing"]
+
+RAIJIN_ALLOCATION  = round(_equity * float(_fence["raijin_allocation_pct"]), 2)
+SUSANOO_ALLOCATION = round(_equity * float(_fence["susanoo_allocation_pct"]), 2)
+MAX_RISK_DOLLARS   = float(_limits["max_risk_dollars"])   # hard per-trade cap
+MAX_POSITION_PCT   = float(_limits["max_position_pct"])
+
+SUSANOO_BASE_PCT       = float(_vrp["base_pct"])
+SUSANOO_MAX_PCT        = float(_vrp["max_pct"])
+SUSANOO_VRP_ACTIVATION = float(_vrp["vrp_activation"])
+SUSANOO_VRP_FULL_SCALE = float(_vrp["vrp_full_scale"])
+SUSANOO_VIX_HALF       = float(_vrp["vix_half_threshold"])
+SUSANOO_VIX_DORMANT    = float(_vrp["vix_dormant_threshold"])
 
 
 def compute_vrp(implied_vol: float, realized_vol: float) -> float:
@@ -115,12 +135,11 @@ class KellySizer:
         # Apply blended fraction to full Kelly
         kelly_fraction = kelly_full * blended
 
-        # Capital to risk: fraction × RAIJIN allocation ($3,500)
-        raijin_allocation = 3500.0
-        kelly_budget      = round(kelly_fraction * raijin_allocation, 2)
+        # Capital to risk: fraction × RAIJIN allocation
+        kelly_budget = round(kelly_fraction * RAIJIN_ALLOCATION, 2)
 
-        # Hard caps are never overridden: locked $ limit and 15% per-position cap.
-        hard_cap = min(MAX_RISK_DOLLARS, raijin_allocation * 0.15)
+        # Hard caps are never overridden: locked $ limit and per-position cap.
+        hard_cap = min(MAX_RISK_DOLLARS, RAIJIN_ALLOCATION * MAX_POSITION_PCT)
         if max_loss > hard_cap:
             return self._reject(
                 vix_tier,
@@ -170,16 +189,14 @@ class KellySizer:
         for (lo, hi), fraction in RAIJIN_KELLY_TIERS.items():
             if lo <= vix < hi:
                 return fraction, f"{lo:.0f}-{hi:.0f}"
-        # VIX >= 100 edge case
-        return 0.08, "100+"
+        # VIX beyond the last tier: use the most conservative fraction
+        return min(RAIJIN_KELLY_TIERS.values()), "100+"
 
     def _ivr_kelly(self, ivr: float) -> float:
-        if ivr > 50:
-            return 0.25
-        elif ivr > 25:
-            return 0.15
-        else:
-            return 0.08
+        for min_ivr, fraction in RAIJIN_IVR_TIERS:
+            if min_ivr is None or ivr > min_ivr:
+                return fraction
+        return min(f for _, f in RAIJIN_IVR_TIERS)
 
     # -----------------------------------------------------------------------
     # SUSANOO sizing — continuous VRP function
@@ -200,22 +217,22 @@ class KellySizer:
         Intraday flag (Phase S1): no sizing change — intraday debit spreads
         use identical Kelly logic. The flag is passed to IS checkpoints only.
         """
-        susanoo_allocation = 1500.0
+        susanoo_allocation = SUSANOO_ALLOCATION
 
         if max_loss <= 0:
             raise ValueError("max_loss must be > 0")
 
         # Dormancy checks
-        if vrp >= -3.0:
+        if vrp >= SUSANOO_VRP_ACTIVATION:
             return self._reject(
                 f"VRP={vrp:.1f}",
-                f"SUSANOO DORMANT — VRP={vrp:.1f} >= -3.0 (no inversion). "
+                f"SUSANOO DORMANT — VRP={vrp:.1f} >= {SUSANOO_VRP_ACTIVATION} (no inversion). "
                 f"Signal rejected at sizing.",
             )
-        if vix_level > 40.0:
+        if vix_level > SUSANOO_VIX_DORMANT:
             return self._reject(
                 f"VIX={vix_level:.1f}",
-                f"SUSANOO DORMANT — VIX={vix_level:.1f} > 40 "
+                f"SUSANOO DORMANT — VIX={vix_level:.1f} > {SUSANOO_VIX_DORMANT} "
                 f"(premium too expensive for long premium). ",
             )
         if edge_magnitude <= 0:
@@ -224,15 +241,16 @@ class KellySizer:
                 f"SUSANOO REJECTED — edge_magnitude={edge_magnitude:.2f} <= 0 (no positive EV).",
             )
 
-        base_risk = 0.03 * susanoo_allocation   # $45 at $1,500
-        max_risk  = 0.05 * susanoo_allocation   # $75 at $1,500
+        base_risk = SUSANOO_BASE_PCT * susanoo_allocation   # $45 at $1,500
+        max_risk  = SUSANOO_MAX_PCT * susanoo_allocation    # $75 at $1,500
 
-        vrp_mag       = abs(vrp)
-        scale         = min(1.0, (vrp_mag - 3.0) / 6.0)   # 0→1 as VRP goes -3→-9
+        # 0→1 as VRP goes activation → full_scale (-3 → -9)
+        scale = min(1.0, (SUSANOO_VRP_ACTIVATION - vrp)
+                         / (SUSANOO_VRP_ACTIVATION - SUSANOO_VRP_FULL_SCALE))
         adjusted_risk = base_risk + (scale * (max_risk - base_risk))
 
         # VIX ceiling compression
-        if vix_level > 35.0:
+        if vix_level > SUSANOO_VIX_HALF:
             adjusted_risk *= 0.5
 
         adjusted_risk = round(min(adjusted_risk, MAX_RISK_DOLLARS), 2)

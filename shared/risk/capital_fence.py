@@ -8,14 +8,24 @@ from datetime import datetime, timezone
 
 import asyncpg
 
+from shared.risk.params import PARAMS
+
 logger = logging.getLogger("tko-agents.capital_fence")
+
+# From risk_parameters.yaml → capital_fence
+_fence = PARAMS["capital_fence"]
+RAIJIN_PCT         = float(_fence["raijin_allocation_pct"])
+SUSANOO_PCT        = float(_fence["susanoo_allocation_pct"])
+DD_ALERT           = float(_fence["combined_dd_alert"])
+DD_FREEZE_SUSANOO  = float(_fence["combined_dd_freeze_susanoo"])
+DD_FREEZE_ALL      = float(_fence["combined_dd_freeze_all"])
 
 # Drawdown thresholds → freeze action
 # SUSANOO always freezes first (secondary system)
 FREEZE_THRESHOLDS = [
-    (0.08, ["SUSANOO", "RAIJIN"]),  # 8% combined DD → full halt
-    (0.06, ["SUSANOO"]),             # 6% combined DD → freeze SUSANOO
-    (0.04, []),                      # 4% combined DD → alert only
+    (DD_FREEZE_ALL,     ["SUSANOO", "RAIJIN"]),  # 8% combined DD → full halt
+    (DD_FREEZE_SUSANOO, ["SUSANOO"]),            # 6% combined DD → freeze SUSANOO
+    (DD_ALERT,          []),                     # 4% combined DD → alert only
 ]
 
 
@@ -85,16 +95,16 @@ class CapitalFence:
 
         # Check combined drawdown
         dd = await self._combined_drawdown_pct()
-        if dd >= 0.06 and system == "SUSANOO":
+        if dd >= DD_FREEZE_SUSANOO and system == "SUSANOO":
             logger.warning(
                 f"[SUSANOO] can_allocate=False — "
-                f"combined drawdown {dd:.1%} >= 6% SUSANOO freeze threshold"
+                f"combined drawdown {dd:.1%} >= {DD_FREEZE_SUSANOO:.0%} SUSANOO freeze threshold"
             )
             return False
-        if dd >= 0.08:
+        if dd >= DD_FREEZE_ALL:
             logger.warning(
                 f"[{system}] can_allocate=False — "
-                f"combined drawdown {dd:.1%} >= 8% full halt threshold"
+                f"combined drawdown {dd:.1%} >= {DD_FREEZE_ALL:.0%} full halt threshold"
             )
             return False
 
@@ -162,8 +172,8 @@ class CapitalFence:
             )
             total = sum(float(r["current_allocation"]) for r in rows)
 
-            raijin_new  = round(total * 0.70, 2)
-            susanoo_new = round(total * 0.30, 2)
+            raijin_new  = round(total * RAIJIN_PCT, 2)
+            susanoo_new = round(total * SUSANOO_PCT, 2)
 
             await conn.execute(
                 """
@@ -248,8 +258,8 @@ class CapitalFence:
                         )
                 return  # Apply only the highest breached threshold
 
-        if dd >= 0.04:
-            logger.warning(f"⚠️  Combined drawdown {dd:.1%} — approaching 6% SUSANOO freeze threshold")
+        if dd >= DD_ALERT:
+            logger.warning(f"⚠️  Combined drawdown {dd:.1%} — approaching {DD_FREEZE_SUSANOO:.0%} SUSANOO freeze threshold")
 
     async def _combined_drawdown_pct(self) -> float:
         """

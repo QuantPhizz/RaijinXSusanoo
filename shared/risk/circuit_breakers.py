@@ -8,14 +8,18 @@ from datetime import datetime, timezone
 
 import asyncpg
 
+from shared.risk.params import PARAMS
+
 logger = logging.getLogger("tko-agents.circuit_breakers")
 
-# Breaker thresholds — sourced from Cardinal Rules
-DAILY_DD_THRESHOLD    = -0.02   # -2% daily P&L → pause new entries
-PEAK_TROUGH_THRESHOLD = -0.08   # -8% from peak → full halt
-VIX_SPIKE_TRIGGER     = 30.0    # VIX > 30 → RAIJIN long-only mode
-VIX_SPIKE_RESOLVE     = 28.0    # VIX < 28 → auto-resolve
-IS_BUDGET_THRESHOLD   = 0.25    # IS > 25% of avg edge → pause system
+# Breaker thresholds — from risk_parameters.yaml (drawdowns stored positive there)
+_cb = PARAMS["circuit_breakers"]
+DAILY_DD_THRESHOLD    = -float(_cb["daily_drawdown_pct"])   # -2% daily P&L → pause new entries
+PEAK_TROUGH_THRESHOLD = -float(_cb["peak_to_trough_pct"])   # -8% from peak → full halt
+VIX_SPIKE_TRIGGER     = float(_cb["vix_spike_threshold"])   # VIX > 30 → RAIJIN long-only mode
+VIX_SPIKE_RESOLVE     = float(_cb["vix_resume_threshold"])  # VIX < 28 → auto-resolve
+IS_BUDGET_THRESHOLD   = float(_cb["is_budget_pct"])         # IS > 25% of avg edge → pause system
+STARTING_EQUITY       = float(PARAMS["account"]["starting_equity"])
 
 
 class CircuitBreakerManager:
@@ -91,7 +95,7 @@ class CircuitBreakerManager:
         equity_row = await self.pool.fetchrow(
             "SELECT SUM(current_allocation) AS total FROM capital_fence"
         )
-        total_equity = float(equity_row["total"]) if equity_row else 5000.0
+        total_equity = float(equity_row["total"]) if equity_row else STARTING_EQUITY
 
         pct = daily_pnl / total_equity if total_equity > 0 else 0.0
 
