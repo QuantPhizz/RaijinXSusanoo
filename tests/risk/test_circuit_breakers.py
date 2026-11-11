@@ -68,3 +68,15 @@ def test_check_all_treats_errors_as_triggered():
         "v_trailing_is_ratio": None,
     })
     assert run(CircuitBreakerManager(pool).check_all("RAIJIN")) == ["DAILY_DD"]
+
+
+# --- IS_BUDGET reads the column v_trailing_is_ratio actually exposes --------
+
+def test_is_budget_fires_above_threshold():
+    pool = FakePool({"v_trailing_is_ratio": {"system": "RAIJIN", "avg_is_pct_of_edge": 0.31}})
+    assert run(CircuitBreakerManager(pool).check_is_budget("RAIJIN")) is True
+
+
+def test_is_budget_quiet_below_threshold():
+    pool = FakePool({"v_trailing_is_ratio": {"system": "RAIJIN", "avg_is_pct_of_edge": 0.10}})
+    assert run(CircuitBreakerManager(pool).check_is_budget("RAIJIN")) is False

@@ -227,7 +227,7 @@ class CircuitBreakerManager:
         if not row:
             return False
 
-        is_ratio = float(row.get("is_ratio", 0) or 0)
+        is_ratio = float(row["avg_is_pct_of_edge"] or 0)
 
         if is_ratio > IS_BUDGET_THRESHOLD:
             logger.warning(
