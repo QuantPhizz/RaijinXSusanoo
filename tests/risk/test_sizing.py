@@ -86,3 +86,22 @@ def test_susanoo_never_exceeds_vrp_budget(sizer):
     r = susanoo(sizer, max_loss=25, vrp=-9.0)  # budget $75 → 3 contracts
     assert r["contracts"] == 3
     assert r["capital_to_risk"] == 75
+
+
+# --- Fix #6: VRP sign convention is IV - RV ---------------------------------
+
+def test_compute_vrp_is_implied_minus_realized():
+    from shared.risk.sizing import compute_vrp
+    assert compute_vrp(implied_vol=14.0, realized_vol=22.0) == -8.0
+
+
+def test_cheap_iv_activates_susanoo(sizer):
+    from shared.risk.sizing import compute_vrp
+    vrp = compute_vrp(implied_vol=14.0, realized_vol=22.0)   # IV cheap vs RV
+    assert susanoo(sizer, vrp=vrp)["contracts"] >= 1
+
+
+def test_rich_iv_keeps_susanoo_dormant(sizer):
+    from shared.risk.sizing import compute_vrp
+    vrp = compute_vrp(implied_vol=22.0, realized_vol=14.0)   # IV rich vs RV
+    assert susanoo(sizer, vrp=vrp)["contracts"] == 0

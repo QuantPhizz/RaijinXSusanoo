@@ -19,6 +19,15 @@ RAIJIN_KELLY_TIERS: dict[tuple[float, float], float] = {
 
 MAX_RISK_DOLLARS = 250.0  # trade_limits.max_risk_dollars — hard per-trade cap
 
+
+def compute_vrp(implied_vol: float, realized_vol: float) -> float:
+    """
+    Variance Risk Premium, in vol points: VRP = IV − RV.
+    Positive → premium rich (RAIJIN sells). Negative → premium cheap
+    (SUSANOO buys when VRP < -3.0). Matches SUSANOO v3 and signals.vrp_value.
+    """
+    return implied_vol - realized_vol
+
 # ---------------------------------------------------------------------------
 # Kelly Sizer
 # ---------------------------------------------------------------------------
@@ -45,7 +54,7 @@ class KellySizer:
         max_loss: float,          # Max loss per contract (spread width - credit)
         vix_level: float,         # Current VIX
         underlying_ivr: float,    # Underlying IV rank 0-100
-        vrp: float = 0.0,         # VRP for SUSANOO (realized - implied vol)
+        vrp: float = 0.0,         # VRP = IV - RV (see compute_vrp); SUSANOO needs < -3
         intraday: bool = False,   # SUSANOO intraday flag (Phase S1)
     ) -> dict:
         """
