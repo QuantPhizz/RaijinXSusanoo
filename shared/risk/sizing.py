@@ -17,6 +17,8 @@ RAIJIN_KELLY_TIERS: dict[tuple[float, float], float] = {
     (30.0, 100.0): 0.08,  # Crisis: minimal (VIX_SPIKE breaker → long-only)
 }
 
+MAX_RISK_DOLLARS = 250.0  # trade_limits.max_risk_dollars — hard per-trade cap
+
 # ---------------------------------------------------------------------------
 # Kelly Sizer
 # ---------------------------------------------------------------------------
@@ -106,19 +108,28 @@ class KellySizer:
 
         # Capital to risk: fraction × RAIJIN allocation ($3,500)
         raijin_allocation = 3500.0
-        capital_to_risk   = round(kelly_fraction * raijin_allocation, 2)
+        kelly_budget      = round(kelly_fraction * raijin_allocation, 2)
 
-        # Floor: at least 1 contract, cap at allocation
-        capital_to_risk = max(capital_to_risk, max_loss)       # 1 contract min
-        capital_to_risk = min(capital_to_risk, raijin_allocation * 0.15)  # 15% cap per position
+        # Hard caps are never overridden: locked $ limit and 15% per-position cap.
+        hard_cap = min(MAX_RISK_DOLLARS, raijin_allocation * 0.15)
+        if max_loss > hard_cap:
+            return self._reject(
+                vix_tier,
+                f"RAIJIN REJECTED — max_loss=${max_loss:.2f} per contract exceeds "
+                f"hard cap ${hard_cap:.2f}.",
+            )
 
-        contracts = max(1, int(capital_to_risk / max_loss))
+        # 1-contract floor applies to the Kelly budget only, inside the hard cap.
+        budget          = min(max(kelly_budget, max_loss), hard_cap)
+        contracts       = int(budget // max_loss)
+        capital_to_risk = round(contracts * max_loss, 2)
 
         rationale = (
             f"RAIJIN | VIX={vix_level:.1f} → tier {vix_tier} ({vix_fraction:.2f}) | "
             f"IVR={underlying_ivr:.0f} → {ivr_fraction:.2f} | "
             f"blended={blended:.2f} | "
             f"full_kelly={kelly_full:.3f} → fractional={kelly_fraction:.3f} | "
+            f"kelly_budget=${kelly_budget:.2f} hard_cap=${hard_cap:.2f} | "
             f"capital_to_risk=${capital_to_risk:.2f} | "
             f"contracts={contracts}"
         )
@@ -215,18 +226,27 @@ class KellySizer:
         if vix_level > 35.0:
             adjusted_risk *= 0.5
 
-        adjusted_risk = round(adjusted_risk, 2)
+        adjusted_risk = round(min(adjusted_risk, MAX_RISK_DOLLARS), 2)
 
         # Full Kelly
         kelly_full     = edge_magnitude / max_loss
         kelly_fraction = adjusted_risk / susanoo_allocation
 
-        contracts = max(1, int(adjusted_risk / max_loss))
+        # The VRP risk budget is the per-trade limit: no 1-contract floor.
+        contracts = int(adjusted_risk // max_loss)
+        if contracts == 0:
+            return self._reject(
+                f"VRP={vrp:.1f}",
+                f"SUSANOO REJECTED — max_loss=${max_loss:.2f} per contract exceeds "
+                f"risk budget ${adjusted_risk:.2f}.",
+            )
+        capital_to_risk = round(contracts * max_loss, 2)
 
         rationale = (
             f"SUSANOO | VRP={vrp:.1f} scale={scale:.2f} | "
             f"VIX={vix_level:.1f} | "
             f"base=${base_risk:.2f} max=${max_risk:.2f} → adjusted=${adjusted_risk:.2f} | "
+            f"capital_to_risk=${capital_to_risk:.2f} | "
             f"contracts={contracts} | "
             f"intraday_flag={intraday}"
         )
@@ -236,7 +256,7 @@ class KellySizer:
             "kelly_full":       round(kelly_full, 4),
             "kelly_fraction":   round(kelly_fraction, 4),
             "vix_tier":         f"VRP={vrp:.1f}",
-            "capital_to_risk":  adjusted_risk,
+            "capital_to_risk":  capital_to_risk,
             "contracts":        contracts,
             "sizing_rationale": rationale,
         }

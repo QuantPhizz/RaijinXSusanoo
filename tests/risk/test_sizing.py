@@ -49,3 +49,40 @@ def test_raijin_positive_edge_still_trades(sizer):
 
 def test_susanoo_dormant_above_activation(sizer):
     assert susanoo(sizer, vrp=-2.9)["contracts"] == 0
+
+
+# --- Fixes #2/#3: hard caps are never overridden ----------------------------
+
+def test_raijin_large_edge_capped_at_max_risk_dollars(sizer):
+    r = raijin(sizer, edge_magnitude=200, max_loss=100)
+    assert r["capital_to_risk"] <= 250
+    assert r["contracts"] == 2
+
+
+def test_raijin_contract_wider_than_hard_cap_is_rejected(sizer):
+    r = raijin(sizer, edge_magnitude=60, max_loss=300)
+    assert r["contracts"] == 0
+    assert r["capital_to_risk"] == 0.0
+
+
+def test_raijin_one_contract_floor_kept_within_hard_cap(sizer):
+    # Kelly budget ~$44 < one $200 contract: floor to 1, still under $250.
+    r = raijin(sizer, edge_magnitude=10, max_loss=200)
+    assert r["contracts"] == 1
+    assert r["capital_to_risk"] == 200
+
+
+def test_raijin_capital_to_risk_is_actual_risk(sizer):
+    r = raijin(sizer, edge_magnitude=200, max_loss=110)
+    assert r["capital_to_risk"] == r["contracts"] * 110
+
+
+def test_susanoo_contract_wider_than_budget_is_rejected(sizer):
+    r = susanoo(sizer, edge_magnitude=10, max_loss=300)
+    assert r["contracts"] == 0
+
+
+def test_susanoo_never_exceeds_vrp_budget(sizer):
+    r = susanoo(sizer, max_loss=25, vrp=-9.0)  # budget $75 → 3 contracts
+    assert r["contracts"] == 3
+    assert r["capital_to_risk"] == 75
