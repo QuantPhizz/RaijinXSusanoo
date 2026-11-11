@@ -50,17 +50,20 @@ class CircuitBreakerManager:
         system = system.upper()
         triggered = []
 
-        if await self.check_daily_drawdown():
-            triggered.append("DAILY_DD")
-
-        if await self.check_peak_to_trough():
-            triggered.append("PEAK_TROUGH")
-
-        if await self.check_vix_spike():
-            triggered.append("VIX_SPIKE")
-
-        if await self.check_is_budget(system):
-            triggered.append("IS_BUDGET")
+        checks = [
+            ("DAILY_DD",    self.check_daily_drawdown),
+            ("PEAK_TROUGH", self.check_peak_to_trough),
+            ("VIX_SPIKE",   self.check_vix_spike),
+            ("IS_BUDGET",   lambda: self.check_is_budget(system)),
+        ]
+        # Spec v4.1: every breaker fails closed — an error counts as triggered.
+        for name, check in checks:
+            try:
+                if await check():
+                    triggered.append(name)
+            except Exception:
+                logger.exception(f"[{system}] {name} check errored — failing closed")
+                triggered.append(name)
 
         if triggered:
             logger.warning(f"[{system}] breakers triggered: {triggered}")
@@ -161,8 +164,18 @@ class CircuitBreakerManager:
             LIMIT 1
             """
         )
-        if not row or not row["vix"]:
-            return False  # No VIX data yet — don't block
+        if not row or row["vix"] is None:
+            # No VIX data — fail closed (spec v4.1). Auto-resolves once a
+            # VIX < VIX_SPIKE_RESOLVE reading arrives.
+            logger.warning("VIX_SPIKE breaker: no VIX data — failing closed")
+            await self._log_breaker(
+                system="RAIJIN",
+                breaker_type="VIX_SPIKE",
+                trigger_value=None,
+                threshold=VIX_SPIKE_TRIGGER,
+                action="RAIJIN_LONG_ONLY — VIX data unavailable (fail closed).",
+            )
+            return True
 
         vix = float(row["vix"])
 

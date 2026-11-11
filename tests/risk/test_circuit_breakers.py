@@ -40,3 +40,31 @@ def test_peak_trough_queries_existing_column():
 def test_peak_trough_no_history_is_not_triggered():
     pool = FakePool({"FROM daily_metrics": {"peak": None, "current": None}})
     assert run(CircuitBreakerManager(pool).check_peak_to_trough()) is False
+
+
+# --- Fix #5: VIX breaker and check_all fail closed ---------------------------
+
+def test_vix_missing_fails_closed():
+    pool = FakePool({"raw_payload->>'vix'": None})
+    assert run(CircuitBreakerManager(pool).check_vix_spike()) is True
+    assert any("VIX data unavailable" in str(args) for _, args in pool.executed)
+
+
+def test_vix_below_trigger_is_clear():
+    pool = FakePool({"raw_payload->>'vix'": {"vix": 18.0}})
+    assert run(CircuitBreakerManager(pool).check_vix_spike()) is False
+
+
+def test_vix_above_trigger_fires():
+    pool = FakePool({"raw_payload->>'vix'": {"vix": 31.0}})
+    assert run(CircuitBreakerManager(pool).check_vix_spike()) is True
+
+
+def test_check_all_treats_errors_as_triggered():
+    pool = FakePool({
+        "FROM trades": RuntimeError("db down"),
+        "FROM daily_metrics": {"peak": 5000, "current": 5000},
+        "raw_payload->>'vix'": {"vix": 15.0},
+        "v_trailing_is_ratio": None,
+    })
+    assert run(CircuitBreakerManager(pool).check_all("RAIJIN")) == ["DAILY_DD"]
