@@ -110,21 +110,24 @@ class CircuitBreakerManager:
         """
         Account-level: current equity more than 8% below peak?
         If triggered: full halt, manual review required.
-        Phase 0: always returns False (no real equity curve yet).
+        Peak is the all-time high of daily_metrics.account_equity (no rolling
+        window, so an old peak cannot silently age out); current is the most
+        recent row. Phase 0: returns False until daily_metrics has rows.
         """
         row = await self.pool.fetchrow(
             """
-            SELECT MAX(closing_equity) AS peak, MIN(closing_equity) AS trough
+            SELECT MAX(account_equity) AS peak,
+                   (SELECT account_equity FROM daily_metrics
+                    ORDER BY trading_date DESC LIMIT 1) AS current
             FROM daily_metrics
-            WHERE trading_date >= CURRENT_DATE - INTERVAL '90 days'
             """
         )
-        if not row or not row["peak"] or not row["trough"]:
+        if not row or row["peak"] is None or row["current"] is None:
             return False
 
-        peak   = float(row["peak"])
-        trough = float(row["trough"])
-        dd     = (trough - peak) / peak if peak > 0 else 0.0
+        peak    = float(row["peak"])
+        current = float(row["current"])
+        dd      = (current - peak) / peak if peak > 0 else 0.0
 
         if dd <= PEAK_TROUGH_THRESHOLD:
             logger.warning(
