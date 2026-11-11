@@ -84,8 +84,15 @@ class KellySizer:
         if max_loss <= 0:
             raise ValueError("max_loss must be > 0")
 
+        # No positive expected value → no trade. Never floor a negative Kelly up.
+        if edge_magnitude <= 0:
+            return self._reject(
+                "n/a",
+                f"RAIJIN REJECTED — edge_magnitude={edge_magnitude:.2f} <= 0 (no positive EV).",
+            )
+
         # Full Kelly: edge / max_loss
-        kelly_full = edge_magnitude / max_loss if max_loss > 0 else 0.0
+        kelly_full = edge_magnitude / max_loss
 
         # VIX tier lookup
         vix_fraction, vix_tier = self._raijin_vix_tier(vix_level)
@@ -126,6 +133,19 @@ class KellySizer:
             "sizing_rationale": rationale,
         }
 
+    @staticmethod
+    def _reject(tier: str, rationale: str) -> dict:
+        """Zero-size decision. Callers must treat contracts == 0 as 'do not trade'."""
+        logger.info(rationale)
+        return {
+            "kelly_full":       0.0,
+            "kelly_fraction":   0.0,
+            "vix_tier":         tier,
+            "capital_to_risk":  0.0,
+            "contracts":        0,
+            "sizing_rationale": rationale,
+        }
+
     def _raijin_vix_tier(self, vix: float) -> tuple[float, str]:
         for (lo, hi), fraction in RAIJIN_KELLY_TIERS.items():
             if lo <= vix < hi:
@@ -162,31 +182,27 @@ class KellySizer:
         """
         susanoo_allocation = 1500.0
 
+        if max_loss <= 0:
+            raise ValueError("max_loss must be > 0")
+
         # Dormancy checks
         if vrp >= -3.0:
-            return {
-                "kelly_full":       0.0,
-                "kelly_fraction":   0.0,
-                "vix_tier":         f"VRP={vrp:.1f}",
-                "capital_to_risk":  0.0,
-                "contracts":        0,
-                "sizing_rationale": (
-                    f"SUSANOO DORMANT — VRP={vrp:.1f} >= -3.0 (no inversion). "
-                    f"Signal rejected at sizing."
-                ),
-            }
+            return self._reject(
+                f"VRP={vrp:.1f}",
+                f"SUSANOO DORMANT — VRP={vrp:.1f} >= -3.0 (no inversion). "
+                f"Signal rejected at sizing.",
+            )
         if vix_level > 40.0:
-            return {
-                "kelly_full":       0.0,
-                "kelly_fraction":   0.0,
-                "vix_tier":         f"VIX={vix_level:.1f}",
-                "capital_to_risk":  0.0,
-                "contracts":        0,
-                "sizing_rationale": (
-                    f"SUSANOO DORMANT — VIX={vix_level:.1f} > 40 "
-                    f"(premium too expensive for long premium). "
-                ),
-            }
+            return self._reject(
+                f"VIX={vix_level:.1f}",
+                f"SUSANOO DORMANT — VIX={vix_level:.1f} > 40 "
+                f"(premium too expensive for long premium). ",
+            )
+        if edge_magnitude <= 0:
+            return self._reject(
+                f"VRP={vrp:.1f}",
+                f"SUSANOO REJECTED — edge_magnitude={edge_magnitude:.2f} <= 0 (no positive EV).",
+            )
 
         base_risk = 0.03 * susanoo_allocation   # $45 at $1,500
         max_risk  = 0.05 * susanoo_allocation   # $75 at $1,500
@@ -202,10 +218,10 @@ class KellySizer:
         adjusted_risk = round(adjusted_risk, 2)
 
         # Full Kelly
-        kelly_full     = edge_magnitude / max_loss if max_loss > 0 else 0.0
+        kelly_full     = edge_magnitude / max_loss
         kelly_fraction = adjusted_risk / susanoo_allocation
 
-        contracts = max(1, int(adjusted_risk / max_loss)) if max_loss > 0 else 1
+        contracts = max(1, int(adjusted_risk / max_loss))
 
         rationale = (
             f"SUSANOO | VRP={vrp:.1f} scale={scale:.2f} | "
