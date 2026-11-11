@@ -85,7 +85,8 @@ class CircuitBreakerManager:
             """
             SELECT COALESCE(SUM(realized_pnl), 0) AS daily_pnl
             FROM trades
-            WHERE DATE(exit_ts) = CURRENT_DATE
+            WHERE (exit_ts AT TIME ZONE 'America/New_York')::date
+                  = (NOW() AT TIME ZONE 'America/New_York')::date
               AND status = 'CLOSED'
             """
         )

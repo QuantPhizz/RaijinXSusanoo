@@ -80,3 +80,24 @@ def test_is_budget_fires_above_threshold():
 def test_is_budget_quiet_below_threshold():
     pool = FakePool({"v_trailing_is_ratio": {"system": "RAIJIN", "avg_is_pct_of_edge": 0.10}})
     assert run(CircuitBreakerManager(pool).check_is_budget("RAIJIN")) is False
+
+
+# --- DAILY_DD uses the New York trading date, not the DB (UTC) date ---------
+
+def test_daily_dd_uses_new_york_session_date():
+    pool = FakePool({"FROM trades": {"daily_pnl": 0}, "FROM capital_fence": {"total": 5000}})
+    seen = []
+    orig = pool.fetchrow
+
+    async def spy(query, *args):
+        seen.append(query)
+        return await orig(query, *args)
+
+    pool.fetchrow = spy
+    run(CircuitBreakerManager(pool).check_daily_drawdown())
+    assert "America/New_York" in seen[0] and "CURRENT_DATE" not in seen[0]
+
+
+def test_daily_dd_fires_at_two_percent_loss():
+    pool = FakePool({"FROM trades": {"daily_pnl": -100}, "FROM capital_fence": {"total": 5000}})
+    assert run(CircuitBreakerManager(pool).check_daily_drawdown()) is True
