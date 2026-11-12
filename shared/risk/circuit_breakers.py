@@ -8,14 +8,18 @@ from datetime import datetime, timezone
 
 import asyncpg
 
+from shared.risk.params import PARAMS
+
 logger = logging.getLogger("tko-agents.circuit_breakers")
 
-# Breaker thresholds — sourced from Cardinal Rules
-DAILY_DD_THRESHOLD    = -0.02   # -2% daily P&L → pause new entries
-PEAK_TROUGH_THRESHOLD = -0.08   # -8% from peak → full halt
-VIX_SPIKE_TRIGGER     = 30.0    # VIX > 30 → RAIJIN long-only mode
-VIX_SPIKE_RESOLVE     = 28.0    # VIX < 28 → auto-resolve
-IS_BUDGET_THRESHOLD   = 0.25    # IS > 25% of avg edge → pause system
+# Breaker thresholds — from risk_parameters.yaml (drawdowns stored positive there)
+_cb = PARAMS["circuit_breakers"]
+DAILY_DD_THRESHOLD    = -float(_cb["daily_drawdown_pct"])   # -2% daily P&L → pause new entries
+PEAK_TROUGH_THRESHOLD = -float(_cb["peak_to_trough_pct"])   # -8% from peak → full halt
+VIX_SPIKE_TRIGGER     = float(_cb["vix_spike_threshold"])   # VIX > 30 → RAIJIN long-only mode
+VIX_SPIKE_RESOLVE     = float(_cb["vix_resume_threshold"])  # VIX < 28 → auto-resolve
+IS_BUDGET_THRESHOLD   = float(_cb["is_budget_pct"])         # IS > 25% of avg edge → pause system
+STARTING_EQUITY       = float(PARAMS["account"]["starting_equity"])
 
 
 class CircuitBreakerManager:
@@ -50,17 +54,20 @@ class CircuitBreakerManager:
         system = system.upper()
         triggered = []
 
-        if await self.check_daily_drawdown():
-            triggered.append("DAILY_DD")
-
-        if await self.check_peak_to_trough():
-            triggered.append("PEAK_TROUGH")
-
-        if await self.check_vix_spike():
-            triggered.append("VIX_SPIKE")
-
-        if await self.check_is_budget(system):
-            triggered.append("IS_BUDGET")
+        checks = [
+            ("DAILY_DD",    self.check_daily_drawdown),
+            ("PEAK_TROUGH", self.check_peak_to_trough),
+            ("VIX_SPIKE",   self.check_vix_spike),
+            ("IS_BUDGET",   lambda: self.check_is_budget(system)),
+        ]
+        # Spec v4.1: every breaker fails closed — an error counts as triggered.
+        for name, check in checks:
+            try:
+                if await check():
+                    triggered.append(name)
+            except Exception:
+                logger.exception(f"[{system}] {name} check errored — failing closed")
+                triggered.append(name)
 
         if triggered:
             logger.warning(f"[{system}] breakers triggered: {triggered}")
@@ -78,7 +85,8 @@ class CircuitBreakerManager:
             """
             SELECT COALESCE(SUM(realized_pnl), 0) AS daily_pnl
             FROM trades
-            WHERE DATE(exit_ts) = CURRENT_DATE
+            WHERE (exit_ts AT TIME ZONE 'America/New_York')::date
+                  = (NOW() AT TIME ZONE 'America/New_York')::date
               AND status = 'CLOSED'
             """
         )
@@ -88,7 +96,7 @@ class CircuitBreakerManager:
         equity_row = await self.pool.fetchrow(
             "SELECT SUM(current_allocation) AS total FROM capital_fence"
         )
-        total_equity = float(equity_row["total"]) if equity_row else 5000.0
+        total_equity = float(equity_row["total"]) if equity_row else STARTING_EQUITY
 
         pct = daily_pnl / total_equity if total_equity > 0 else 0.0
 
@@ -110,21 +118,24 @@ class CircuitBreakerManager:
         """
         Account-level: current equity more than 8% below peak?
         If triggered: full halt, manual review required.
-        Phase 0: always returns False (no real equity curve yet).
+        Peak is the all-time high of daily_metrics.account_equity (no rolling
+        window, so an old peak cannot silently age out); current is the most
+        recent row. Phase 0: returns False until daily_metrics has rows.
         """
         row = await self.pool.fetchrow(
             """
-            SELECT MAX(closing_equity) AS peak, MIN(closing_equity) AS trough
+            SELECT MAX(account_equity) AS peak,
+                   (SELECT account_equity FROM daily_metrics
+                    ORDER BY trading_date DESC LIMIT 1) AS current
             FROM daily_metrics
-            WHERE trading_date >= CURRENT_DATE - INTERVAL '90 days'
             """
         )
-        if not row or not row["peak"] or not row["trough"]:
+        if not row or row["peak"] is None or row["current"] is None:
             return False
 
-        peak   = float(row["peak"])
-        trough = float(row["trough"])
-        dd     = (trough - peak) / peak if peak > 0 else 0.0
+        peak    = float(row["peak"])
+        current = float(row["current"])
+        dd      = (current - peak) / peak if peak > 0 else 0.0
 
         if dd <= PEAK_TROUGH_THRESHOLD:
             logger.warning(
@@ -158,8 +169,18 @@ class CircuitBreakerManager:
             LIMIT 1
             """
         )
-        if not row or not row["vix"]:
-            return False  # No VIX data yet — don't block
+        if not row or row["vix"] is None:
+            # No VIX data — fail closed (spec v4.1). Auto-resolves once a
+            # VIX < VIX_SPIKE_RESOLVE reading arrives.
+            logger.warning("VIX_SPIKE breaker: no VIX data — failing closed")
+            await self._log_breaker(
+                system="RAIJIN",
+                breaker_type="VIX_SPIKE",
+                trigger_value=None,
+                threshold=VIX_SPIKE_TRIGGER,
+                action="RAIJIN_LONG_ONLY — VIX data unavailable (fail closed).",
+            )
+            return True
 
         vix = float(row["vix"])
 
@@ -207,7 +228,7 @@ class CircuitBreakerManager:
         if not row:
             return False
 
-        is_ratio = float(row.get("is_ratio", 0) or 0)
+        is_ratio = float(row["avg_is_pct_of_edge"] or 0)
 
         if is_ratio > IS_BUDGET_THRESHOLD:
             logger.warning(

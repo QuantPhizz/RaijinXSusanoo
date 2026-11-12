@@ -1,8 +1,15 @@
 # =============================================================================
 # TKO-AGENTS — Shared Risk Parameters
 # Source-of-record: SPEC_shared_risk_engine_v4.1.md
-# Loaded by: shared/risk/sizing.py
+# Loaded by: shared/risk/params.py (consumed by sizing, circuit_breakers,
+#            capital_fence). Do not duplicate these values in code.
 # =============================================================================
+
+# ---------------------------------------------------------------------------
+# Account
+# ---------------------------------------------------------------------------
+account:
+  starting_equity: 5000          # Phase 0 IBKR account size ($)
 
 # ---------------------------------------------------------------------------
 # RAIJIN Kelly Tiers (VIX-conditioned fractional Kelly)
@@ -15,6 +22,16 @@ raijin_kelly_tiers:
     fraction: 0.15       # Elevated: compress
   - vix_range: [30, 100]
     fraction: 0.08       # Crisis: minimal (VIX_SPIKE breaker -> long-only)
+
+# RAIJIN IVR tiers — blended 50/50 with the VIX tier. First match wins
+# (ivr > min_ivr); the last tier is the floor.
+raijin_ivr_tiers:
+  - min_ivr: 50
+    fraction: 0.25
+  - min_ivr: 25
+    fraction: 0.15
+  - min_ivr: null
+    fraction: 0.08
 
 # ---------------------------------------------------------------------------
 # SUSANOO VRP Sizing (continuous function, NOT a binary switch)
@@ -54,6 +71,7 @@ capital_fence:
 trade_limits:
   max_risk_per_trade_pct: 0.05  # 5% of system allocation per trade
   max_risk_dollars: 250
+  max_position_pct: 0.15        # Per-position cap as % of RAIJIN allocation
   max_positions: 3
   max_spread_width: 3
   profit_target: 0.50           # 50% of max profit
